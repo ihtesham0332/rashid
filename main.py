@@ -484,9 +484,10 @@ def data_sample(
 if __name__ == "__main__":
     import uvicorn
 
+    port = int(os.environ.get("PORT", 8000))
     print("=" * 60)
     print("  Diabetes Risk Prediction API")
-    print("  Starting server at http://localhost:8000")
-    print("  Swagger docs at   http://localhost:8000/docs")
+    print(f"  Starting server on port {port}")
+    print("  Swagger docs at /docs")
     print("=" * 60)
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
