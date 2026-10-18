@@ -6,7 +6,7 @@ colorTo: indigo
 sdk: docker
 app_port: 7860
 pinned: false
-short_description: Deep Tabular ResNet (98.6% Accuracy) Diabetes Severity Risk API
+short_description: Deep Tabular ResNet (98.6% Acc) Diabetes API
 ---
 
 # Diabetes Risk Prediction API — Complete Documentation
