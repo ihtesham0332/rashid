@@ -1,3 +1,14 @@
+---
+title: Diabetes Risk Prediction API
+emoji: 🩺
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+short_description: Deep Tabular ResNet (98.6% Accuracy) Diabetes Severity Risk API
+---
+
 # Diabetes Risk Prediction API — Complete Documentation
 
 > **A production-ready REST API** built with FastAPI that uses a pre-trained **Deep Tabular ResNet model** (PyTorch, 98.60% test accuracy) to predict diabetes risk severity (Low / Medium / High) from patient health metrics.
