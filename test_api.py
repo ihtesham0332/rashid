@@ -38,10 +38,11 @@ def test_health():
     data = response.json()
     assert data["status"] == "healthy"
     assert data["model_loaded"] is True
-    assert data["model_type"] == "SVC"
+    assert "ResNet" in data["model_type"] or data["model_type"] == "DiabetesTabularResNet"
     print("  [PASS] Health check verified:")
     print(f"         Status: {data['status']}")
-    print(f"         Model Type: {data['model_type']} (Kernel: {data['kernel']}, C: {data['C']})")
+    print(f"         Model Type: {data['model_type']} ({data['architecture']})")
+    print(f"         Accuracy: {data['accuracy']} | Macro ROC-AUC: {data['macro_roc_auc']}")
     print(f"         Classes: {data['target_classes']}")
 
 
@@ -52,7 +53,7 @@ def test_model_info():
     data = response.json()
     assert "scaler_means" in data
     assert "feature_names" in data
-    print(f"  [PASS] Model info returned 9 features and training size: {data['training_data_rows']} records.")
+    print(f"  [PASS] Model info returned {len(data['feature_names'])} features and training size: {data['training_data_rows']} records.")
 
 
 def test_predictions_real_data():

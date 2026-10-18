@@ -1,6 +1,6 @@
 # Diabetes Risk Prediction API — Complete Documentation
 
-> **A production-ready REST API** built with FastAPI that uses a pre-trained SVM model to predict diabetes risk severity (Low / Medium / High) from patient health metrics.
+> **A production-ready REST API** built with FastAPI that uses a pre-trained **Deep Tabular ResNet model** (PyTorch, 98.60% test accuracy) to predict diabetes risk severity (Low / Medium / High) from patient health metrics.
 
 ---
 
@@ -23,11 +23,12 @@
 | Item | Detail |
 |------|--------|
 | **Framework** | FastAPI (Python) |
-| **ML Model** | SVM (`SVC`, RBF kernel, C=100) |
-| **Scaler** | `StandardScaler` |
+| **Model** | Deep Tabular ResNet (`DiabetesTabularResNet`, PyTorch) |
+| **Weights** | `diabetes_deep_model.pt` (331 KB) |
+| **Scaler** | `StandardScaler` (13 clinical & physiological features) |
 | **Target** | Diabetes risk: `Low`, `Medium`, `High` |
 | **Training Data** | 1,898 patient records |
-| **Accuracy** | ~96.58% (test set) |
+| **Accuracy** | **98.60%** (Macro ROC-AUC: 0.9994) |
 | **Interactive Docs** | Swagger UI at `/docs`, ReDoc at `/redoc` |
 
 ### Risk Level Definitions
