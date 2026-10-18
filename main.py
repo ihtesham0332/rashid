@@ -849,13 +849,15 @@ UI_HTML = """<!DOCTYPE html>
         document.getElementById('placeholder').style.display = 'none';
         document.getElementById('results').style.display = 'flex';
 
-        const badge = document.getElementById('badge');
-        badge.className = 'pred-badge ' + data.predicted_class;
-        document.getElementById('predLabel').innerText = data.predicted_class + ' Risk';
-        document.getElementById('predConf').innerText = data.confidence_percentage.toFixed(1) + '%';
-        document.getElementById('riskDesc').innerText = data.risk_description;
+        const predClass = data.prediction || data.predicted_class;
+        const confVal = (data.confidence !== undefined ? data.confidence : data.confidence_percentage) || 0;
+        const probs = data.probabilities || data.probability_breakdown || { Low: 0, Medium: 0, High: 0 };
 
-        const probs = data.probability_breakdown;
+        const badge = document.getElementById('badge');
+        badge.className = 'pred-badge ' + predClass;
+        document.getElementById('predLabel').innerText = predClass + ' Risk';
+        document.getElementById('predConf').innerText = confVal.toFixed(1) + '%';
+        document.getElementById('riskDesc').innerText = data.risk_description || '';
         document.getElementById('pLow').innerText = probs.Low.toFixed(1) + '%';
         document.getElementById('barLow').style.width = probs.Low + '%';
         document.getElementById('pMed').innerText = probs.Medium.toFixed(1) + '%';
