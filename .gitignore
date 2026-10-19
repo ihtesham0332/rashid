@@ -20,6 +20,8 @@ ENV/
 *.swp
 *.swo
 
-# OS files
+# OS and Office lock files
 .DS_Store
 Thumbs.db
+~$*
+
