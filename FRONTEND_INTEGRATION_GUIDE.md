@@ -231,20 +231,39 @@ Accepts an array of patient objects `[ { ... }, { ... } ]`.
 
 ---
 
-## 6. Error Handling (HTTP 422 & 500)
+## 6. Error Handling & Resilient Features
 
-If invalid values are supplied (e.g. `Age: 200` or `diastolic_bp > systolic_bp`), the API responds with **HTTP 422 Unprocessable Entity**:
+### Smart Automatic Conversions
+The API now features automated input normalization to prevent common validation mistakes:
+- **Casing Insensitivity**: Accepts fields in TitleCase (`Age`, `Glucose`, `Hba1c`) or lowercase (`age`, `glucose`, `hba1c`).
+- **Automatic Height Unit Conversion**: If height is passed in centimeters (e.g., `172`), the API automatically converts it to meters (`1.72 m`).
+- **Auto-Calculated BMI**: If `bmi` is omitted or 0, the API calculates it dynamically: `weight / (height * height)`.
+- **Flexible Gender Values**: Accepts `"Male"`, `"male"`, `"M"`, `"Female"`, `"female"`, `"F"`.
+
+### HTTP 422 Unprocessable Entity
+If required fields are missing or values fall completely outside clinical physiological limits (e.g. `Age: 200` or negative values), the API responds with **HTTP 422 Unprocessable Entity** with human-readable error descriptions:
 
 ```json
 {
-  "detail": [
-    {
-      "loc": ["body", "Age"],
-      "msg": "Input should be less than or equal to 120",
-      "type": "less_than_equal"
-    }
-  ]
+  "error": "Validation Error (422)",
+  "message": "Input data failed schema validation.",
+  "details": [
+    "body -> Age: Input should be less than or equal to 120"
+  ],
+  "expected_fields": {
+    "Age": "int (1-120)",
+    "gender": "'Male' or 'Female'",
+    "Glucose": "float (0-700 mg/dL)",
+    "weight": "float (1-300 kg)",
+    "height": "float (0.5-2.5 meters, or cm)",
+    "bmi": "float (optional, auto-calculated)",
+    "systolic_bp": "float (30-300 mmHg)",
+    "diastolic_bp": "float (20-200 mmHg)",
+    "Hba1c": "float (3.0-15.0 %)"
+  },
+  "interactive_docs": "/docs"
 }
 ```
 
-In your UI, check `if (!response.ok)` and display user-friendly error messages based on the `detail` array.
+In your frontend UI, check `if (!response.ok)` and display user-friendly error messages based on `details` or `message`.
+

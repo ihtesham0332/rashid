@@ -29,9 +29,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -208,18 +209,86 @@ class PatientInput(BaseModel):
     Glucose: float = Field(..., ge=0, le=700, description="Fasting blood glucose level (mg/dL)", examples=[105.84])
     weight: float = Field(..., ge=1, le=300, description="Body weight in kilograms", examples=[70.2])
     height: float = Field(..., ge=0.5, le=2.5, description="Height in metres", examples=[1.65])
-    bmi: float = Field(..., ge=1, le=80, description="Body Mass Index (kg/m²)", examples=[25.75])
+    bmi: Optional[float] = Field(None, ge=1, le=80, description="Body Mass Index (kg/m²). Auto-calculated if omitted.", examples=[25.75])
     systolic_bp: float = Field(..., ge=30, le=300, description="Systolic blood pressure (mmHg)", examples=[110])
     diastolic_bp: float = Field(..., ge=20, le=200, description="Diastolic blood pressure (mmHg)", examples=[73])
     Hba1c: float = Field(..., ge=3.0, le=15.0, description="Glycated haemoglobin percentage (%)", examples=[5.1])
 
+    @model_validator(mode="before")
+    @classmethod
+    def pre_process_fields(cls, data: Any) -> Any:
+        """
+        Provides case-insensitive field alias mapping, automatic height unit conversion (cm -> m),
+        and automatic BMI calculation if omitted.
+        """
+        if not isinstance(data, dict):
+            return data
+
+        lower_map = {str(k).lower().replace("-", "_").replace(" ", "_"): v for k, v in data.items()}
+
+        def get_val(canonical: str, aliases: list[str], default=None):
+            for k in [canonical] + aliases:
+                k_norm = k.lower().replace("-", "_").replace(" ", "_")
+                if k_norm in lower_map and lower_map[k_norm] is not None:
+                    return lower_map[k_norm]
+            return default
+
+        processed = {}
+        processed["Age"] = get_val("Age", ["age"])
+        processed["gender"] = get_val("gender", ["Gender", "sex", "Sex"])
+        processed["Glucose"] = get_val("Glucose", ["glucose", "fasting_glucose", "blood_sugar"])
+        processed["weight"] = get_val("weight", ["Weight", "weight_kg"])
+
+        # Auto-convert height from cm to meters if given as > 3.0 (e.g. 172 cm -> 1.72 m)
+        raw_height = get_val("height", ["Height", "height_m", "height_cm"])
+        if raw_height is not None:
+            try:
+                h_f = float(raw_height)
+                if h_f > 3.0:
+                    h_f = h_f / 100.0
+                processed["height"] = round(h_f, 2)
+            except (ValueError, TypeError):
+                processed["height"] = raw_height
+        else:
+            processed["height"] = None
+
+        # Auto-calculate BMI if not supplied or zero
+        raw_bmi = get_val("bmi", ["BMI", "body_mass_index"])
+        raw_weight = processed.get("weight")
+        raw_h = processed.get("height")
+        if (raw_bmi is None or raw_bmi == 0) and raw_weight and raw_h:
+            try:
+                w_val = float(raw_weight)
+                h_val = float(raw_h)
+                if h_val > 0:
+                    raw_bmi = round(w_val / (h_val * h_val), 2)
+            except Exception:
+                pass
+        processed["bmi"] = raw_bmi
+
+        processed["systolic_bp"] = get_val("systolic_bp", ["systolic", "sbp", "Systolic_BP", "systolic_blood_pressure"])
+        processed["diastolic_bp"] = get_val("diastolic_bp", ["diastolic", "dbp", "Diastolic_BP", "diastolic_blood_pressure"])
+        processed["Hba1c"] = get_val("Hba1c", ["hba1c", "HbA1c", "HBA1C", "a1c", "glycated_hemoglobin"])
+
+        return processed
+
     @field_validator("gender")
     @classmethod
-    def validate_gender(cls, v: str) -> str:
-        v_lower = v.strip().lower()
-        if v_lower not in ("male", "female"):
+    def validate_gender(cls, v: Any) -> str:
+        if not isinstance(v, str):
             raise ValueError("gender must be 'Male' or 'Female'")
-        return v_lower.capitalize()
+        v_clean = v.strip().lower()
+        if v_clean in ("male", "m", "1"):
+            return "Male"
+        elif v_clean in ("female", "f", "0"):
+            return "Female"
+        raise ValueError("gender must be 'Male' or 'Female'")
+
+    @model_validator(mode="after")
+    def compute_missing_bmi(self) -> PatientInput:
+        if self.bmi is None and self.weight and self.height:
+            self.bmi = round(float(self.weight) / (float(self.height) ** 2), 2)
+        return self
 
     model_config = {
         "json_schema_extra": {
@@ -917,6 +986,40 @@ def root(request: Request):
     }
 
 
+@app.post(
+    "/",
+    summary="Root POST fallback",
+    tags=["Predictions"],
+    include_in_schema=False,
+)
+def root_post(payload: Optional[Dict[str, Any]] = None):
+    """
+    Prevents 405 Method Not Allowed when clients or forms POST to the root URL '/'.
+    If valid patient metrics are provided in the payload, runs prediction directly.
+    """
+    if payload:
+        try:
+            patient = PatientInput(**payload)
+            return predict(patient)
+        except Exception as exc:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "Bad Request",
+                    "message": "To run a prediction, please send a POST request with patient metrics to '/predict'.",
+                    "details": str(exc),
+                    "docs": "/docs",
+                },
+            )
+    return JSONResponse(
+        status_code=200,
+        content={
+            "message": "Diabetes Risk Prediction API is running.",
+            "instructions": "Send a POST request with patient metrics to '/predict' to get diabetes severity predictions.",
+            "docs": "/docs",
+        },
+    )
+
 
 @app.get(
     "/health",
@@ -1051,6 +1154,272 @@ def data_sample(
 
     sample = reference_df.sample(n=min(n, len(reference_df)), random_state=42)
     return sample.to_dict(orient="records")
+
+
+# ===========================================================================
+# Validation Error Handler (User-Friendly 422 Details)
+# ===========================================================================
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    Returns user-friendly validation error details when a client submits invalid JSON
+    to prevent cryptic 422 errors and clearly indicate missing or malformed fields.
+    """
+    errors = exc.errors()
+    simplified_errors = []
+    for err in errors:
+        loc = " -> ".join(str(l) for l in err.get("loc", []))
+        msg = err.get("msg", "Invalid value")
+        simplified_errors.append(f"{loc}: {msg}")
+
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": "Validation Error (422)",
+            "message": "Input data failed schema validation.",
+            "details": simplified_errors,
+            "expected_fields": {
+                "Age": "int (1-120)",
+                "gender": "'Male' or 'Female'",
+                "Glucose": "float (0-700 mg/dL)",
+                "weight": "float (1-300 kg)",
+                "height": "float (0.5-2.5 meters, or cm)",
+                "bmi": "float (optional, auto-calculated if omitted)",
+                "systolic_bp": "float (30-300 mmHg)",
+                "diastolic_bp": "float (20-200 mmHg)",
+                "Hba1c": "float (3.0-15.0 %)",
+            },
+            "interactive_docs": "/docs",
+        },
+    )
+
+
+# ===========================================================================
+# Agent & MCP Protocol Discovery Gateway
+# ===========================================================================
+@app.api_route(
+    "/.well-known/{path:path}",
+    methods=["GET", "POST", "HEAD", "OPTIONS"],
+    tags=["Agent / Discovery"],
+    include_in_schema=False,
+)
+async def well_known_discovery(path: str, request: Request):
+    """
+    Handles discovery requests from Agent-to-Agent (A2A), OpenAI Plugin crawlers,
+    and Hugging Face Agent cataloging bots.
+    """
+    clean_path = path.strip().lower()
+
+    # Agent-to-Agent (A2A) protocol discovery card
+    if clean_path.endswith("agent.json"):
+        return JSONResponse(
+            status_code=200,
+            content={
+                "name": "Diabetes Risk Prediction Agent",
+                "description": "Deep Tabular ResNet model (98.60% accuracy) for predicting clinical diabetes severity risk (Low, Medium, High).",
+                "version": "2.0.0",
+                "protocol_version": "0.1.0",
+                "capabilities": {
+                    "prediction": True,
+                    "batch_prediction": True,
+                    "model_metadata": True,
+                },
+                "endpoints": {
+                    "predict": "/predict",
+                    "batch_predict": "/predict/batch",
+                    "health": "/health",
+                    "openapi": "/openapi.json",
+                },
+                "tools": [
+                    {
+                        "name": "predict_diabetes_risk",
+                        "description": "Predict diabetes risk level (Low, Medium, High) given clinical health metrics.",
+                        "endpoint": "/predict",
+                        "method": "POST",
+                    }
+                ],
+            },
+        )
+
+    # OpenAI Plugin / GPT Action discovery manifest
+    if "ai-plugin" in clean_path:
+        base_url = str(request.base_url).rstrip("/")
+        return JSONResponse(
+            status_code=200,
+            content={
+                "schema_version": "v1",
+                "name_for_human": "Diabetes Risk Predictor",
+                "name_for_model": "diabetes_risk_predictor",
+                "description_for_human": "Predict diabetes risk severity (Low, Medium, High) using clinical biomarkers.",
+                "description_for_model": "Clinical diabetes prediction tool powered by a Deep Tabular ResNet. Send patient biomarkers to /predict.",
+                "auth": {"type": "none"},
+                "api": {"type": "openapi", "url": f"{base_url}/openapi.json"},
+            },
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "active",
+            "service": "Diabetes Risk Prediction API",
+            "endpoints": {
+                "predict": "/predict",
+                "docs": "/docs",
+                "health": "/health",
+            },
+        },
+    )
+
+
+@app.api_route("/mcp", methods=["GET", "POST", "HEAD", "OPTIONS"], tags=["Agent / MCP"], include_in_schema=False)
+@app.api_route("/mcp/{subpath:path}", methods=["GET", "POST", "HEAD", "OPTIONS"], tags=["Agent / MCP"], include_in_schema=False)
+@app.api_route("/v1/mcp", methods=["GET", "POST", "HEAD", "OPTIONS"], tags=["Agent / MCP"], include_in_schema=False)
+@app.api_route("/v1/mcp/{subpath:path}", methods=["GET", "POST", "HEAD", "OPTIONS"], tags=["Agent / MCP"], include_in_schema=False)
+@app.api_route("/sse", methods=["GET", "POST", "HEAD", "OPTIONS"], tags=["Agent / MCP"], include_in_schema=False)
+@app.api_route("/sse/{subpath:path}", methods=["GET", "POST", "HEAD", "OPTIONS"], tags=["Agent / MCP"], include_in_schema=False)
+@app.api_route("/a2a", methods=["GET", "POST", "HEAD", "OPTIONS"], tags=["Agent / MCP"], include_in_schema=False)
+@app.api_route("/a2a/{subpath:path}", methods=["GET", "POST", "HEAD", "OPTIONS"], tags=["Agent / MCP"], include_in_schema=False)
+async def mcp_and_agent_gateway(request: Request, subpath: str = ""):
+    """
+    Universal gateway for Model Context Protocol (MCP) and Agent-to-Agent (A2A) probes.
+    Responds to JSON-RPC calls (initialize, tools/list, tools/call) and returns 200 OK
+    for automated discovery probes instead of cluttering logs with 404 Not Found.
+    """
+    req_path = request.url.path.lower()
+    if req_path.endswith("agent.json"):
+        return await well_known_discovery("agent.json", request)
+
+    if request.method == "POST":
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        if isinstance(body, dict) and "method" in body:
+            method = body.get("method")
+            req_id = body.get("id")
+
+            # MCP protocol handshake
+            if method == "initialize":
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "protocolVersion": "2024-11-05",
+                            "capabilities": {"tools": {}},
+                            "serverInfo": {
+                                "name": "diabetes-risk-prediction-api",
+                                "version": "2.0.0",
+                            },
+                        },
+                    },
+                )
+
+            # MCP tool discovery
+            if method in ("tools/list", "tool/list"):
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "tools": [
+                                {
+                                    "name": "predict_diabetes_risk",
+                                    "description": "Predict patient diabetes risk severity (Low, Medium, High) with 98.60% accuracy using Deep Tabular ResNet.",
+                                    "inputSchema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "Age": {"type": "integer", "description": "Patient age in years (1-120)"},
+                                            "gender": {"type": "string", "enum": ["Male", "Female"], "description": "Patient gender"},
+                                            "Glucose": {"type": "number", "description": "Fasting blood glucose (mg/dL)"},
+                                            "weight": {"type": "number", "description": "Weight in kg"},
+                                            "height": {"type": "number", "description": "Height in meters (e.g. 1.72) or cm"},
+                                            "bmi": {"type": "number", "description": "BMI (kg/m²). Optional - auto-calculated if omitted"},
+                                            "systolic_bp": {"type": "number", "description": "Systolic BP (mmHg)"},
+                                            "diastolic_bp": {"type": "number", "description": "Diastolic BP (mmHg)"},
+                                            "Hba1c": {"type": "number", "description": "HbA1c percentage (%)"},
+                                        },
+                                        "required": ["Age", "gender", "Glucose", "weight", "height", "systolic_bp", "diastolic_bp", "Hba1c"],
+                                    },
+                                }
+                            ]
+                        },
+                    },
+                )
+
+            # MCP tool execution
+            if method in ("tools/call", "tool/call"):
+                params = body.get("params", {})
+                args = params.get("arguments", {})
+                try:
+                    patient = PatientInput(**args)
+                    pred, conf, probs = predict_single(patient)
+                    result_payload = {
+                        "prediction": pred,
+                        "risk_description": RISK_DESCRIPTIONS.get(pred, ""),
+                        "confidence_percentage": conf,
+                        "probabilities": probs,
+                        "input_data": patient.model_dump(),
+                    }
+                    return JSONResponse(
+                        status_code=200,
+                        content={
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": json.dumps(result_payload, indent=2),
+                                    }
+                                ]
+                            },
+                        },
+                    )
+                except Exception as err:
+                    return JSONResponse(
+                        status_code=200,
+                        content={
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "error": {"code": -32602, "message": f"Tool execution failed: {err}"},
+                        },
+                    )
+
+            if method == "notifications/initialized":
+                return JSONResponse(status_code=200, content={"status": "initialized"})
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "active",
+                "service": "Diabetes Risk Prediction API",
+                "message": "Gateway active. Use REST POST /predict or standard MCP JSON-RPC.",
+                "endpoints": {
+                    "predict": "/predict",
+                    "docs": "/docs",
+                    "health": "/health",
+                },
+            },
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "active",
+            "service": "Diabetes Risk Prediction API",
+            "protocols_supported": ["REST", "MCP (Model Context Protocol)", "A2A (Agent-to-Agent)"],
+            "endpoints": {
+                "predict": "/predict",
+                "docs": "/docs",
+                "openapi": "/openapi.json",
+                "health": "/health",
+            },
+        },
+    )
 
 
 # ===========================================================================

@@ -179,6 +179,89 @@ def test_validation_errors():
     print("  [PASS] Correctly rejected invalid gender ('Alien') with HTTP 422.")
 
 
+def test_flexible_inputs():
+    print_header("8. Testing Flexible Input Handling (Auto Height cm, Lowercase Keys, Auto BMI)")
+    # Test lowercase keys, height in cm (165 cm instead of 1.65 m), and omitted BMI
+    flexible_patient = {
+        "age": 42,
+        "gender": "female",
+        "glucose": 105.84,
+        "weight": 70.2,
+        "height": 165,  # Given in cm! Should auto-convert to 1.65 m
+        "systolic_bp": 110,
+        "diastolic_bp": 73,
+        "hba1c": 5.1,
+        # bmi omitted! Should auto-calculate
+    }
+    res = client.post("/predict", json=flexible_patient)
+    assert res.status_code == 200, f"Expected 200, got {res.status_code}: {res.text}"
+    body = res.json()
+    assert body["prediction"] == "Low"
+    assert round(body["input_data"]["height"], 2) == 1.65
+    assert body["input_data"]["bmi"] is not None
+    print("  [PASS] Auto-converted height in cm (165 -> 1.65m), auto-calculated BMI, and normalized lowercase keys.")
+
+
+def test_root_post():
+    print_header("9. Testing Root POST Fallback (Prevent 405 Method Not Allowed)")
+    # 1. Empty POST to /
+    res1 = client.post("/")
+    assert res1.status_code == 200, f"Expected 200, got {res1.status_code}"
+    # 2. Patient POST to /
+    patient = {
+        "Age": 42, "gender": "Female", "Glucose": 105.84,
+        "weight": 70.2, "height": 1.65, "bmi": 25.75,
+        "systolic_bp": 110, "diastolic_bp": 73, "Hba1c": 5.1
+    }
+    res2 = client.post("/", json=patient)
+    assert res2.status_code == 200, f"Expected 200, got {res2.status_code}"
+    assert res2.json()["prediction"] == "Low"
+    print("  [PASS] Root POST handled gracefully with 200 OK without 405 error.")
+
+
+def test_agent_and_mcp_discovery():
+    print_header("10. Testing Agent Card & MCP Protocol Discovery (Prevent 404 Probes)")
+    # 1. Agent card
+    res_agent = client.get("/.well-known/agent.json")
+    assert res_agent.status_code == 200, f"Expected 200, got {res_agent.status_code}"
+    assert "Diabetes Risk Prediction" in res_agent.json()["name"]
+
+    # 2. OpenAI Plugin manifest
+    res_plugin = client.get("/.well-known/ai-plugin.json")
+    assert res_plugin.status_code == 200, f"Expected 200, got {res_plugin.status_code}"
+
+    # 3. MCP initialize
+    mcp_init = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    res_mcp_init = client.post("/mcp", json=mcp_init)
+    assert res_mcp_init.status_code == 200, f"Expected 200, got {res_mcp_init.status_code}"
+    assert "protocolVersion" in res_mcp_init.json()["result"]
+
+    # 4. MCP tools/list
+    mcp_tools = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+    res_mcp_tools = client.post("/mcp", json=mcp_tools)
+    assert res_mcp_tools.status_code == 200, f"Expected 200, got {res_mcp_tools.status_code}"
+    assert len(res_mcp_tools.json()["result"]["tools"]) >= 1
+
+    # 5. MCP tools/call
+    mcp_call = {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "predict_diabetes_risk",
+            "arguments": {
+                "Age": 42, "gender": "Female", "Glucose": 105.84,
+                "weight": 70.2, "height": 1.65, "bmi": 25.75,
+                "systolic_bp": 110, "diastolic_bp": 73, "Hba1c": 5.1
+            }
+        }
+    }
+    res_mcp_call = client.post("/mcp", json=mcp_call)
+    assert res_mcp_call.status_code == 200, f"Expected 200, got {res_mcp_call.status_code}"
+
+    print("  [PASS] A2A Agent Card, OpenAI plugin, and MCP JSON-RPC protocol tests all passed (200 OK).")
+
+
 if __name__ == "__main__":
     print("\nStarting Diabetes Risk Prediction API Automated Test Suite...")
     try:
@@ -189,8 +272,11 @@ if __name__ == "__main__":
         test_batch_prediction()
         test_data_endpoints()
         test_validation_errors()
+        test_flexible_inputs()
+        test_root_post()
+        test_agent_and_mcp_discovery()
         print("\n" + "=" * 60)
-        print("  ALL TESTS PASSED SUCCESSFULLY! (7/7 suites passed)")
+        print("  ALL TESTS PASSED SUCCESSFULLY! (10/10 suites passed)")
         print("=" * 60 + "\n")
     except AssertionError as err:
         print(f"\n[FAIL] Test assertion failed: {err}")
@@ -198,3 +284,4 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"\n[ERROR] Unexpected error: {exc}")
         sys.exit(1)
+
